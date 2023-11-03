@@ -40,7 +40,7 @@ elif [ -n "${SNAPSHOT}" ] && [ ! -d "/var/lib/gwemix/geth/" ]; then
   cd /var/lib/gwemix/snapshot
   aria2c -c -x6 -s6 --auto-file-renaming=false --conditional-get=true --allow-overwrite=true ${SNAPSHOT}
   filename=`echo ${SNAPSHOT} | awk -F/ '{print $NF}'`
-  tar xzvf ${filename} -C /var/lib/gwemix
+  tar xzvf ${filename} -C /var/lib/gwemix/geth
   rm -f ${filename}
   __prune=""
 else
