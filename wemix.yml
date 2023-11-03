@@ -1,0 +1,97 @@
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  gwemix:
+    restart: "unless-stopped"
+    build:
+      context: ./gwemix
+      dockerfile: ${GWEMIX_DOCKERFILE}
+      args:
+        - BUILD_TARGET=${GWEMIX_SRC_BUILD_TARGET}
+        - SRC_REPO=${GWEMIX_SRC_REPO}
+    image: gwemix:local
+    user: gwemix
+    pull_policy: build
+    stop_grace_period: 5m
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - EXTRAS=${EXTRAS:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-false}
+      - SNAPSHOT=${SNAPSHOT}
+    ports:
+      - ${P2P_PORT:-8589}:${P2P_PORT:-8589}/tcp
+      - ${P2P_PORT:-8589}:${P2P_PORT:-8589}/udp
+    volumes:
+      - gwemix-data:/var/lib/gwemix
+      - /etc/localtime:/etc/localtime:ro
+    <<: *logging
+    entrypoint:
+      - docker-entrypoint.sh
+      - gwemix
+      - --http
+      - --http.addr
+      - 0.0.0.0
+      - --http.vhosts=*
+      - --http.corsdomain=*
+      - --datadir
+      - /var/lib/gwemix
+      - --port
+      - ${P2P_PORT:-8589}
+      - --http.port
+      - ${RPC_PORT:-8588}
+      - --ws
+      - --ws.addr
+      - 0.0.0.0
+      - --ws.port
+      - ${WS_PORT:-8598}
+      - --ws.origins=*
+      - --metrics
+      - --metrics.expensive
+      - --pprof
+      - --pprof.addr
+      - 0.0.0.0
+      - --maxpeers
+      - ${MAX_PEER_COUNT:-50}
+      - --${NETWORK}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${RPC_HOST:-wemix}.service=${RPC_HOST:-op}
+      - traefik.http.routers.${RPC_HOST:-wemix}.entrypoints=websecure
+      - traefik.http.routers.${RPC_HOST:-wemix}.rule=Host(`${RPC_HOST:-op}.${DOMAIN}`)
+      - traefik.http.routers.${RPC_HOST:-wemix}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${RPC_HOST:-wemix}lb.service=${RPC_HOST:-op}
+      - traefik.http.routers.${RPC_HOST:-wemix}lb.entrypoints=websecure
+      - traefik.http.routers.${RPC_HOST:-wemix}lb.rule=Host(`${RPC_LB:-op-lb}.${DOMAIN}`)
+      - traefik.http.routers.${RPC_HOST:-wemix}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${RPC_HOST:-wemix}.loadbalancer.server.port=${RPC_PORT:-8588}
+      - traefik.http.routers.${WS_HOST:-wemixws}.service=${WS_HOST:-opws}
+      - traefik.http.routers.${WS_HOST:-wemixws}.entrypoints=websecure
+      - traefik.http.routers.${WS_HOST:-wemixws}.rule=Host(`${WS_HOST:-opws}.${DOMAIN}`)
+      - traefik.http.routers.${WS_HOST:-wemixws}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${WS_HOST:-wemixws}lb.service=${WS_HOST:-opws}
+      - traefik.http.routers.${WS_HOST:-wemixws}lb.entrypoints=websecure
+      - traefik.http.routers.${WS_HOST:-wemixws}lb.rule=Host(`${WS_LB:-opws-lb}.${DOMAIN}`)
+      - traefik.http.routers.${WS_HOST:-wemixws}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${WS_HOST:-wemixws}.loadbalancer.server.port=${WS_PORT:-8598}
+      - metrics.scrape=true
+      - metrics.path=/debug/metrics/prometheus
+      - metrics.port=6060
+
+  set-prune-marker:
+    profiles: ["tools"]
+    image: alpine:3
+    restart: "no"
+    volumes:
+      - gwemix-data:/var/lib/gwemix
+    entrypoint: ["/bin/sh","-c"]
+    command: /bin/sh
+
+volumes:
+  gwemix-data:
+  jwtsecret:

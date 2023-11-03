@@ -1,0 +1,53 @@
+# Build Gwemix in a stock Go build container
+FROM golang:1.21-bookworm as builder
+
+# Unused, this is here to avoid build time complaints
+ARG DOCKER_TAG
+ARG DOCKER_REPO
+
+ARG BUILD_TARGET
+ARG SRC_REPO
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential \
+libjemalloc-dev liblz4-dev libsnappy-dev libzstd-dev libudev-dev git tzdata
+
+WORKDIR /src
+RUN bash -c "git clone ${SRC_REPO} go-wemix && cd go-wemix && git config advice.detachedHead false && git fetch --all --tags && \
+if [[ ${BUILD_TARGET} =~ pr-.+ ]]; then git fetch origin pull/$(echo ${BUILD_TARGET} | cut -d '-' -f 2)/head:gwemix-pr; git checkout gwemix-pr; else git checkout ${BUILD_TARGET}; fi && \
+make gwemix"
+
+# Pull all binaries into a second stage deploy container
+FROM debian:bookworm
+
+ARG USER=gwemix
+ARG UID=10001
+ARG GID=10001
+
+RUN apt-get update
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates tzdata bash gosu git jq \
+libsnappy-dev libjemalloc-dev
+
+RUN addgroup \
+    --gid "${GID}" \
+    "${USER}"
+
+# See https://stackoverflow.com/a/55757473/12429735RUN
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --shell "/sbin/nologin" \
+    --uid "${UID}" \
+    --ingroup "${USER}" \
+    "${USER}"
+
+RUN mkdir -p /var/lib/gwemix/snapshot && chown -R ${USER}:${USER} /var/lib/gwemix && chmod -R 700 /var/lib/gwemix
+
+# Cannot assume buildkit, hence no chmod
+COPY --from=builder --chown=${USER}:${USER} /src/go-wemix/build/bin/gwemix /usr/local/bin/
+COPY --chown=${USER}:${USER} ./docker-entrypoint.sh /usr/local/bin/
+# Belt and suspenders
+RUN chmod -R 755 /usr/local/bin/*
+
+USER ${USER}
+
+ENTRYPOINT ["gwemix"]
