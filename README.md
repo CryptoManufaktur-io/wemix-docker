@@ -7,7 +7,7 @@ Docker Compose for a Wemix "End Node" (RPC)
 Meant to be used with [central-proxy-docker](https://github.com/CryptoManufaktur-io/central-proxy-docker) for traefik
 and Prometheus remote write; use `:ext-network.yml` in `COMPOSE_FILE` inside `.env` in that case.
 
-If you want the gwemix RPC ports exposed locally, use `gwemix-shared.yml` in `COMPOSE_FILE` inside `.env`.
+If you want the gwemix RPC ports exposed locally, use `rpc-shared.yml` in `COMPOSE_FILE` inside `.env`.
 
 The `./wemd` script can be used as a quick-start:
 
