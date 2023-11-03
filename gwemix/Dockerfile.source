@@ -24,7 +24,7 @@ ARG UID=10001
 ARG GID=10001
 
 RUN apt-get update
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates tzdata bash gosu git jq \
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates tzdata bash gosu aria2 \
 libsnappy-dev libjemalloc-dev
 
 RUN addgroup \

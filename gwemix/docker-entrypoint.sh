@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 if [ "$(id -u)" = '0' ]; then
   chown -R gwemix:gwemix /var/lib/gwemix
