@@ -33,9 +33,8 @@ esac
 if [ "${ARCHIVE_NODE}" = "true" ]; then
   echo "Gwemix archive node without pruning"
   __prune="--syncmode=full --gcmode=archive"
-elif [ -n "${SNAPSHOT}" ] && [ ! -d "/var/lib/gwemix/geth/" ]; then
+elif [ -n "${SNAPSHOT}" ] && [ ! -d "/var/lib/gwemix/geth/chaindata" ]; then
 # Prep datadir
-#  wget -q -O - "${SNAPSHOT}" | tar xvf - -C /var/lib/op-geth
   mkdir -p /var/lib/gwemix/snapshot
   cd /var/lib/gwemix/snapshot
   aria2c -c -x6 -s6 --auto-file-renaming=false --conditional-get=true --allow-overwrite=true ${SNAPSHOT}
