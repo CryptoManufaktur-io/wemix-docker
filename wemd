@@ -123,7 +123,6 @@ upgrade_compose() {
     ${__auto_sudo} apt-get install -y docker-compose-v2 docker-buildx
     echo "Installed docker-compose-v2"
     __old_compose=0
-    __compose_exe="docker compose"
     __compose_upgraded=1
   elif [[ "$__distro" =~ "debian" ]]; then
     ${__auto_sudo} apt-get update && ${__auto_sudo} apt-get -y install ca-certificates curl gnupg lsb-release
