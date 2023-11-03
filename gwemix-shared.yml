@@ -1,6 +1,6 @@
 # To be used with gwemix.yml
 services:
-  wemix:
+  gwemix:
     ports:
-      - ${RPC_PORT:-8545}:${RPC_PORT:-8545}/tcp
-      - ${WS_PORT:-8546}:${WS_PORT:-8546}/tcp
+      - ${RPC_PORT:-8588}:${RPC_PORT:-8588}/tcp
+      - ${WS_PORT:-8598}:${WS_PORT:-8598}/tcp
