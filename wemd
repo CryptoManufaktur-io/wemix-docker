@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 __project_name="Wemix Docker"
 __app_name="Wemix node"
-__sample_service="wemix"
+__sample_service="gwemix"
 __docker_exe="docker"
 __compose_exe="docker compose"
 __compose_upgraded=0
@@ -571,8 +571,8 @@ version() {
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}" || true)
     # Client versions
     case "${value}" in
-        *wemix.yml* )
-            docompose exec wemix wemix version
+        *gwemix.yml* )
+            docompose exec gwemix gwemix version
             ;;&
     esac
 }
