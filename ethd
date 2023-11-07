@@ -430,17 +430,7 @@ envmigrate() {
     __adjust_NETWORK=""
     for var in "${ALL_VARS[@]}"; do
         value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}.source" || true)
-        if [ -n "${value}" ] || [ "${var}" = "EXTRA_STATIC_NODES" ] || [ "${var}" = "SNAPSHOT" ]; then
-            # For goerli and mainnet, we mean op-goerli and op-mainnet
-            if [[ "${var}" = "NETWORK" && ( "${value}" = "goerli" || "${value}" = "mainnet" ) ]]; then
-                __adjust_NETWORK="${value}"
-                value="op-${value}"
-            fi
-            # Coming from the original Optimism Docker, replace ${NETWORK} in strings with goerli or mainnet
-            if [[ -n "${__adjust_NETWORK}" && ( "${var}" = "SNAPSHOT" || "${var}" = "SEQUENCER"
-                || "${var}" = "LEGACY_TAR" ) ]]; then
-                value="${value//\$\{NETWORK\}/${__adjust_NETWORK}}"
-            fi
+        if [ -n "${value}" ] || [ "${var}" = "SNAPSHOT" ]; then
             sed -i'.original' -e "s~^\(${var}\s*=\s*\).*$~\1${value}~" "${ENV_FILE}"
         fi
     done
