@@ -17,7 +17,7 @@ services:
         - SRC_REPO=${GWEMIX_SRC_REPO}
     image: gwemix:local
     user: gwemix
-    pull_policy: build
+    pull_policy: never
     stop_grace_period: 5m
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}
