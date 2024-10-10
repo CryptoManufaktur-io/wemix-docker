@@ -1,5 +1,5 @@
 # Build Gwemix in a stock Go build container
-FROM golang:1.22-bookworm as builder
+FROM golang:1.23-bookworm as builder
 
 # Unused, this is here to avoid build time complaints
 ARG DOCKER_TAG
