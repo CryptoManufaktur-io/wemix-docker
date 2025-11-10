@@ -5,6 +5,11 @@ FROM golang:1.24-bookworm AS builder
 ARG DOCKER_TAG
 ARG DOCKER_REPO
 
+# BUILD_TARGET can be:
+#   - A version tag (e.g., v1.2.3) - RECOMMENDED for production builds
+#   - A branch name (e.g., main, develop)
+#   - A commit hash
+#   - pr-<number> for pull request testing (e.g., pr-123)
 ARG BUILD_TARGET
 ARG SRC_REPO
 
@@ -12,8 +17,21 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 libjemalloc-dev liblz4-dev libsnappy-dev libzstd-dev libudev-dev git tzdata
 
 WORKDIR /src
-RUN bash -c "git clone ${SRC_REPO} go-wemix && cd go-wemix && git config advice.detachedHead false && git fetch --all --tags && \
-if [[ ${BUILD_TARGET} =~ pr-.+ ]]; then git fetch origin pull/$(echo ${BUILD_TARGET} | cut -d '-' -f 2)/head:gwemix-pr; git checkout gwemix-pr; else git checkout ${BUILD_TARGET}; fi && \
+# Clone repository and checkout specified BUILD_TARGET
+# The --tags flag ensures version tags are available for checkout
+RUN bash -c "git clone ${SRC_REPO} go-wemix && \
+cd go-wemix && \
+git config advice.detachedHead false && \
+git fetch --all --tags && \
+if [[ ${BUILD_TARGET} =~ ^pr-[0-9]+$ ]]; then \
+  echo 'Fetching pull request ${BUILD_TARGET}'; \
+  git fetch origin pull/\$(echo ${BUILD_TARGET} | cut -d '-' -f 2)/head:gwemix-pr; \
+  git checkout gwemix-pr; \
+else \
+  echo 'Checking out ${BUILD_TARGET} (tag/branch/commit)'; \
+  git checkout ${BUILD_TARGET}; \
+fi && \
+echo 'Building from:' && git log -1 --oneline && \
 make gwemix"
 
 # Pull all binaries into a second stage deploy container
