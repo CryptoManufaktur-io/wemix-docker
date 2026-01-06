@@ -38,9 +38,15 @@ elif [ -n "${SNAPSHOT}" ] && [ ! -d "/var/lib/gwemix/geth/chaindata" ]; then
   mkdir -p /var/lib/gwemix/snapshot
   cd /var/lib/gwemix/snapshot
   aria2c -c -x6 -s6 --auto-file-renaming=false --conditional-get=true --allow-overwrite=true "${SNAPSHOT}"
-  filename=$(echo "${SNAPSHOT}" | awk -F/ '{print $NF}')
-  mkdir -p /var/lib/gwemix/geth
+  
+  if ! __final_url=$(curl -s -I -L -o /dev/null -w '%{url_effective}' "$SNAPSHOT"); then
+    printf "Error: Failed to retrieve final URL for %s\n" "$SNAPSHOT" >&2
+    exit 1
+  fi
+  filename=$(basename "$__final_url")
+  filename="${filename%%\?*}"
 
+  mkdir -p /var/lib/gwemix/geth
   __dont_rm=0
   if [[ "${filename}" =~ \.tar\.zst$ ]]; then
     pzstd -c -d "${filename}" | tar xvf - -C /var/lib/gwemix/geth
