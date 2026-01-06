@@ -49,7 +49,7 @@ elif [ -n "${SNAPSHOT}" ] && [ ! -d "/var/lib/gwemix/geth/chaindata" ]; then
   elif [[ "${filename}" =~ \.tar$ ]]; then
     tar xvf "${filename}" -C /var/lib/gwemix/geth
   elif [[ "${filename}" =~ \.lz4$ ]]; then
-    lz4 -d "${filename}" | tar xvf - -C /var/lib/gwemix/geth
+    lz4 -c -d "${filename}" | tar xvf - -C /var/lib/gwemix/geth
   else
     __dont_rm=1
     echo "The snapshot file has a format that Wemix Docker can't handle."
