@@ -40,8 +40,26 @@ elif [ -n "${SNAPSHOT}" ] && [ ! -d "/var/lib/gwemix/geth/chaindata" ]; then
   aria2c -c -x6 -s6 --auto-file-renaming=false --conditional-get=true --allow-overwrite=true "${SNAPSHOT}"
   filename=$(echo "${SNAPSHOT}" | awk -F/ '{print $NF}')
   mkdir -p /var/lib/gwemix/geth
-  tar xzvf "${filename}" -C /var/lib/gwemix/geth
-  rm -f "${filename}"
+
+  __dont_rm=0
+  if [[ "${filename}" =~ \.tar\.zst$ ]]; then
+    pzstd -c -d "${filename}" | tar xvf - -C /var/lib/gwemix/geth
+  elif [[ "${filename}" =~ \.tar\.gz$ || "${filename}" =~ \.tgz$ ]]; then
+    tar xzvf "${filename}" -C /var/lib/gwemix/geth
+  elif [[ "${filename}" =~ \.tar$ ]]; then
+    tar xvf "${filename}" -C /var/lib/gwemix/geth
+  elif [[ "${filename}" =~ \.lz4$ ]]; then
+    lz4 -d "${filename}" | tar xvf - -C /var/lib/gwemix/geth
+  else
+    __dont_rm=1
+    echo "The snapshot file has a format that Wemix Docker can't handle."
+    echo "Please come to CryptoManufaktur Discord to work through this."
+    exit 1
+  fi
+  if [ "${__dont_rm}" -eq 0 ]; then
+    rm -f "${filename}"
+  fi
+
   __prune=""
 else
   __prune="--syncmode=snap"
