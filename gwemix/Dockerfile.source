@@ -14,7 +14,7 @@ ARG BUILD_TARGET
 ARG SRC_REPO
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential \
-libjemalloc-dev liblz4-dev libsnappy-dev libzstd-dev libudev-dev git tzdata
+libjemalloc-dev liblz4-dev libsnappy-dev libzstd-dev libudev-dev git tzdata curl unzip lz4 zstd jq
 
 WORKDIR /src
 # Clone repository and checkout specified BUILD_TARGET
@@ -43,7 +43,7 @@ ARG GID=10001
 
 RUN apt-get update
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates tzdata bash gosu aria2 \
-libsnappy-dev libjemalloc-dev
+libsnappy-dev libjemalloc-dev curl unzip lz4 zstd jq
 
 RUN addgroup \
     --gid "${GID}" \
