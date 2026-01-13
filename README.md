@@ -21,4 +21,17 @@ The `./wemd` script can be used as a quick-start:
 
 To update the software, run `./wemd update` and then `./wemd up`
 
+## Checking Sync Status
+
+To verify your node is synced with the public Wemix network:
+
+```bash
+./scripts/check_sync.sh
+```
+
+This script compares your local node's latest block against the public Wemix RPC endpoint (`https://api.wemix.com`). It will report:
+- ✅ Node is in sync (height and hash match)
+- ⚠️ Heights differ - still syncing
+- ❌ Heights match but hashes differ - possible reorg or divergence
+
 This is Wemix Docker v1.0.0
