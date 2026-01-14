@@ -38,7 +38,7 @@ elif [ -n "${SNAPSHOT}" ] && [ ! -d "/var/lib/gwemix/geth/chaindata" ]; then
   mkdir -p /var/lib/gwemix/snapshot
   cd /var/lib/gwemix/snapshot
   aria2c -c -x6 -s6 --auto-file-renaming=false --conditional-get=true --allow-overwrite=true "${SNAPSHOT}"
-  
+
   if ! __final_url=$(curl -s -I -L -o /dev/null -w '%{url_effective}' "$SNAPSHOT"); then
     printf "Error: Failed to retrieve final URL for %s\n" "$SNAPSHOT" >&2
     exit 1
