@@ -572,6 +572,20 @@ version() {
 }
 
 
+check-sync() {
+    trap - ERR
+    set +e
+    if [[ $# -eq 0 ]]; then
+        bash scripts/check_sync.sh --compose-service gwemix
+    else
+        bash scripts/check_sync.sh "$@"
+    fi
+    local rc=$?
+    set -e
+    return $rc
+}
+
+
 help() {
     echo "usage: ${__me} [-h|--help] <command>"
     echo
@@ -595,6 +609,8 @@ help() {
     echo "     executes an arbitrary Docker Compose command. Use \"cmd help\" to list them"
     echo "  terminate"
     echo "     stops the ${__app_name} and destroys all data stores"
+    echo "  check-sync"
+    echo "     check sync status against public RPC (use -h for options)"
     echo "  help"
     echo "      print this help screen"
     echo
@@ -677,7 +693,7 @@ if ! docompose --help >/dev/null 2>&1; then
 fi
 
 case "$__command" in
-    help|update|up|start|down|stop|restart|version|logs|cmd|terminate)
+    help|update|up|start|down|stop|restart|version|logs|cmd|terminate|check-sync)
         $__command "$@";;
     *)
         echo "Unrecognized command $__command"
