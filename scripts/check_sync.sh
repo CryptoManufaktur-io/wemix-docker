@@ -503,21 +503,6 @@ print_eth_syncing() {
   fi
 }
 
-print_sync_state() {
-  local state="$1"
-  case "$state" in
-    in_sync)
-      echo "✅ sync_state: in_sync"
-      ;;
-    syncing)
-      echo "⏳ sync_state: syncing"
-      ;;
-    *)
-      echo "⚠️ sync_state: unknown"
-      ;;
-  esac
-}
-
 jq_value() {
   local response="$1"
   local filter="$2"
