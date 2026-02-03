@@ -5,12 +5,7 @@
 # Exit codes:
 #   0 - In sync (within acceptable lag)
 #   1 - Still syncing (beyond threshold)
-#   2 - Hash/digest mismatch (possible fork/reorg)
-#   3 - Local RPC error
-#   4 - Public RPC error
-#   5 - Missing required tools (curl/jq)
-#   6 - Invalid arguments
-#   7 - Container/service not found or not running
+#   2 - Error (RPC/tools/invalid args/diverged)
 
 set -Eeuo pipefail
 
@@ -73,12 +68,7 @@ Options:
 Exit codes:
   0  In sync or within acceptable lag
   1  Still syncing (beyond threshold)
-  2  Hash mismatch (possible reorg/fork)
-  3  Local RPC error
-  4  Public RPC error
-  5  Missing required tools (curl/jq)
-  6  Invalid arguments
-  7  Container/service not found or not running
+  2  Error (RPC/tools/invalid args/diverged)
 
 Examples:
   $(basename "$0") --public-rpc https://api.wemix.com
@@ -131,9 +121,9 @@ parse_args() {
         exit 0
         ;;
       *)
-        echo "ERROR: Unknown option: $1" >&2
+        echo "❌ error: Unknown option: $1" >&2
         usage >&2
-        exit 6
+        exit 2
         ;;
     esac
   done
@@ -143,13 +133,42 @@ parse_args() {
 # ENVIRONMENT LOADING
 # ============================================================================
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  echo "$value"
+}
+
 load_env() {
-  if [[ -f "$ENV_FILE" ]]; then
-    # shellcheck disable=SC1090
-    set -a
-    source "$ENV_FILE"
-    set +a
+  if [[ ! -f "$ENV_FILE" ]]; then
+    return
   fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(trim "$line")"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="$(trim "$line")"
+    fi
+
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      local key="${line%%=*}"
+      local val="${line#*=}"
+      key="$(trim "$key")"
+      val="$(trim "$val")"
+
+      if [[ "$val" == \"*\" && "$val" == *\" ]]; then
+        val="${val:1:-1}"
+      elif [[ "$val" == \'*\' && "$val" == *\' ]]; then
+        val="${val:1:-1}"
+      fi
+
+      export "$key=$val"
+    fi
+  done <"$ENV_FILE"
 }
 
 # ============================================================================
@@ -205,8 +224,7 @@ resolve_container() {
     local container_id
     container_id=$(docker compose ps -q "$COMPOSE_SERVICE" 2>/dev/null || true)
     if [[ -z "$container_id" ]]; then
-      echo "ERROR: Compose service '$COMPOSE_SERVICE' not found or not running" >&2
-      exit 7
+      fail "Compose service '$COMPOSE_SERVICE' not found or not running"
     fi
     echo "$container_id"
     return
@@ -239,10 +257,10 @@ ensure_tools() {
   if [[ -z "$container" ]]; then
     # Local execution - check tools exist
     if ! command -v curl &>/dev/null || ! command -v jq &>/dev/null; then
-      echo "❌ curl and jq are required" >&2
-      exit 5
+      echo "⏳ Sync status"
+      fail "curl and jq are required"
     fi
-    echo "✅ Tools available"
+    echo "✅ Tools available in container"
     return
   fi
 
@@ -253,11 +271,9 @@ ensure_tools() {
   fi
 
   if [[ "$NO_INSTALL" == "true" ]]; then
-    echo "❌ curl/jq not found in container and --no-install specified" >&2
-    exit 5
+    echo "⏳ Sync status"
+    fail "curl/jq not found in container and --no-install specified"
   fi
-
-  echo "⏳ Installing curl and jq in container..."
 
   # Try apt-get first, then apk
   if exec_cmd "$container" sh -c "command -v apt-get" &>/dev/null; then
@@ -266,10 +282,10 @@ ensure_tools() {
   elif exec_cmd "$container" sh -c "command -v apk" &>/dev/null; then
     exec_cmd "$container" apk add --no-cache curl jq ca-certificates
   else
-    echo "❌ Cannot install tools - unknown package manager" >&2
-    exit 5
+    echo "⏳ Sync status"
+    fail "Cannot install tools - unknown package manager"
   fi
-  echo "✅ Tools installed in container"
+  echo "✅ Tools available in container"
 }
 
 # ============================================================================
@@ -306,9 +322,13 @@ eth_get_block_number() {
   local container="$1"
   local url="$2"
 
-  local response
-  response=$(rpc_post "$container" "$url" "eth_blockNumber")
-  echo "$response" | jq -r '.result // empty' | xargs printf "%d" 2>/dev/null || echo ""
+  local response result
+  if ! response=$(rpc_post "$container" "$url" "eth_blockNumber"); then
+    return 1
+  fi
+  result=$(jq_value "$response" '.result' "eth_blockNumber")
+  [[ "$result" == "null" || -z "$result" ]] && echo "" && return
+  printf "%d" "$result" 2>/dev/null || echo ""
 }
 
 eth_get_block_hash() {
@@ -319,19 +339,27 @@ eth_get_block_hash() {
   local hex_block
   hex_block=$(printf "0x%x" "$block_num")
 
-  local response
-  response=$(rpc_post "$container" "$url" "eth_getBlockByNumber" "[\"$hex_block\",false]")
-  echo "$response" | jq -r '.result.hash // empty'
+  local response result
+  if ! response=$(rpc_post "$container" "$url" "eth_getBlockByNumber" "[\"$hex_block\",false]"); then
+    return 1
+  fi
+  result=$(jq_value "$response" '.result.hash' "eth_getBlockByNumber")
+  [[ "$result" == "null" ]] && result=""
+  echo "$result"
 }
 
 eth_check_syncing() {
   local container="$1"
   local url="$2"
 
-  local response
-  response=$(rpc_post "$container" "$url" "eth_syncing")
-  local result
-  result=$(echo "$response" | jq -rc '.result')
+  local response result
+  if ! response=$(rpc_post "$container" "$url" "eth_syncing"); then
+    return 1
+  fi
+  result=$(jq_value "$response" '.result' "eth_syncing")
+  if [[ "$result" == "null" || -z "$result" ]]; then
+    fail "Failed to parse eth_syncing"
+  fi
 
   if [[ "$result" == "false" ]]; then
     echo "false"
@@ -345,42 +373,29 @@ check_evm() {
   local local_rpc="$2"
   local public_rpc="$3"
 
-  # Check and display sync status
   echo "⏳ Sync status"
   local syncing
-  syncing=$(eth_check_syncing "$container" "$local_rpc" 2>/dev/null) || {
-    echo "❌ error: RPC unreachable ($local_rpc)"
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
-  }
-  print_sync_status "$syncing" "eth_syncing"
+  syncing=$(eth_check_syncing "$container" "$local_rpc" 2>/dev/null) || fail "RPC unreachable ($local_rpc)"
+  print_eth_syncing "$syncing"
 
   # Get local block
   local local_block
-  local_block=$(eth_get_block_number "$container" "$local_rpc")
-  if [[ -z "$local_block" ]]; then
-    echo "❌ error: Failed to get local block number" >&2
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
-  fi
+  local_block=$(eth_get_block_number "$container" "$local_rpc") || fail "RPC unreachable ($local_rpc)"
+  [[ -z "$local_block" ]] && fail "Failed to get local block number"
 
   # Get public block
   local public_block
-  public_block=$(eth_get_block_number "" "$public_rpc")
-  if [[ -z "$public_block" ]]; then
-    echo "❌ error: Failed to get public block number" >&2
-    echo ""
-    echo "❌ Final status: error"
-    exit 4
-  fi
+  public_block=$(eth_get_block_number "" "$public_rpc") || fail "RPC unreachable ($public_rpc)"
+  [[ -z "$public_block" ]] && fail "Failed to get public block number"
 
   local raw_lag=$((public_block - local_block))
   local lag=$raw_lag
   local lag_direction="local behind"
-  if (( lag < 0 )); then
-    lag=$(( -lag ))
+  if (( raw_lag == 0 )); then
+    lag=0
+    lag_direction="local in sync"
+  elif (( raw_lag < 0 )); then
+    lag=$(( -raw_lag ))
     lag_direction="local ahead"
   fi
 
@@ -389,65 +404,54 @@ check_evm() {
   echo "Local head:  $local_block"
   echo "Public head: $public_block"
   echo "Lag:         $lag blocks (threshold: $BLOCK_LAG) ($lag_direction)"
-
-  # Check if syncing (only if local is behind beyond threshold)
-  if (( raw_lag > BLOCK_LAG )); then
-    # Sample for ETA
+  local eta_line="n/a"
+  if (( raw_lag > 0 )); then
     local start_block="$local_block"
     sleep "$SAMPLE_SECS"
     local end_block
-    end_block=$(eth_get_block_number "$container" "$local_rpc")
-    local blocks_advanced=$((end_block - start_block))
-
-    if (( blocks_advanced > 0 )); then
-      local current_lag=$((public_block - end_block))
-      local rate
-      rate=$(awk "BEGIN {printf \"%.2f\", $blocks_advanced / $SAMPLE_SECS}")
-      # Assume chain grows at ~0.08 blocks/sec for ETH mainnet
-      local effective_rate
-      effective_rate=$(awk "BEGIN {r = $rate - 0.08; print (r > 0) ? r : 0.01}")
-      local eta_secs
-      eta_secs=$(awk "BEGIN {printf \"%.0f\", $current_lag / $effective_rate}")
-
-      echo "ETA sample:  $rate blocks/sec -> ~$(format_eta "$eta_secs")"
-    else
-      echo "ETA sample:  n/a"
+    end_block=$(eth_get_block_number "$container" "$local_rpc" 2>/dev/null || true)
+    if [[ -n "$end_block" ]]; then
+      local blocks_advanced=$((end_block - start_block))
+      if (( blocks_advanced > 0 )); then
+        local current_lag=$((public_block - end_block))
+        local rate
+        rate=$(awk "BEGIN {printf \"%.2f\", $blocks_advanced / $SAMPLE_SECS}")
+        # Assume chain grows at ~0.08 blocks/sec for ETH mainnet
+        local effective_rate
+        effective_rate=$(awk "BEGIN {r = $rate - 0.08; print (r > 0) ? r : 0.01}")
+        local eta_secs
+        eta_secs=$(awk "BEGIN {printf \"%.0f\", $current_lag / $effective_rate}")
+        eta_line="$rate blocks/sec -> ~$(format_eta "$eta_secs")"
+      fi
     fi
-
-    echo ""
-    echo "⏳ Final status: syncing"
-    exit 1
   fi
-
-  echo "ETA sample:  n/a"
+  echo "ETA sample:  $eta_line"
 
   # In sync - verify hashes match
   echo ""
   echo "⏳ Latest block comparison"
-  local local_hash public_hash
-  local_hash=$(eth_get_block_hash "$container" "$local_rpc" "$local_block")
-  public_hash=$(eth_get_block_hash "" "$public_rpc" "$local_block")
+  local local_hash public_hash public_hash_at_local
+  local_hash=$(eth_get_block_hash "$container" "$local_rpc" "$local_block") || fail "RPC unreachable ($local_rpc)"
+  public_hash=$(eth_get_block_hash "" "$public_rpc" "$public_block") || fail "RPC unreachable ($public_rpc)"
+  if (( public_block == local_block )); then
+    public_hash_at_local="$public_hash"
+  else
+    public_hash_at_local=$(eth_get_block_hash "" "$public_rpc" "$local_block") || fail "RPC unreachable ($public_rpc)"
+  fi
 
-  # Truncate hashes for display
-  local local_hash_short="${local_hash:0:10}..."
-  local public_hash_short="${public_hash:0:10}..."
+  echo "Local latest:  $local_block $(format_hash "$local_hash")"
+  echo "Public latest: $public_block $(format_hash "$public_hash")"
 
-  echo "Local latest:  $local_block $local_hash_short"
-  echo "Public latest: $public_block $public_hash_short"
-
-  if [[ -n "$local_hash" && -n "$public_hash" && "$local_hash" != "$public_hash" ]]; then
+  if [[ -n "$local_hash" && -n "$public_hash_at_local" && "$local_hash" != "$public_hash_at_local" ]]; then
     echo ""
-    echo "❌ Hash mismatch at block $local_block" >&2
-    echo "   Local:  $local_hash" >&2
-    echo "   Public: $public_hash" >&2
-    echo ""
-    echo "❌ Final status: diverged (possible fork)"
-    exit 2
+    fail "Hash mismatch at block $local_block"
   fi
 
   echo ""
-  echo "✅ Final status: in sync"
-  exit 0
+  if [[ "$syncing" == "true" ]] || (( raw_lag > BLOCK_LAG )); then
+    exit_with_status syncing
+  fi
+  exit_with_status in_sync
 }
 
 # ============================================================================
@@ -470,88 +474,84 @@ check_cosmos() {
 
   # Get local status
   local local_status
-  local_status=$(cosmos_get_status "$container" "$local_rpc" 2>/dev/null) || {
-    echo "❌ error: RPC unreachable ($local_rpc)"
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
-  }
-  if [[ -z "$local_status" ]]; then
-    echo "❌ error: Failed to get local status" >&2
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
-  fi
+  local_status=$(cosmos_get_status "$container" "$local_rpc" 2>/dev/null) || fail "RPC unreachable ($local_rpc)"
+  [[ -z "$local_status" ]] && fail "Failed to get local status"
 
   local local_height local_hash local_catching_up
-  local_height=$(echo "$local_status" | jq -r '.result.sync_info.latest_block_height // .sync_info.latest_block_height')
-  local_hash=$(echo "$local_status" | jq -r '.result.sync_info.latest_block_hash // .sync_info.latest_block_hash')
-  local_catching_up=$(echo "$local_status" | jq -r '.result.sync_info.catching_up // .sync_info.catching_up')
-
-  print_sync_status "$local_catching_up" "catching_up"
+  local_height=$(jq_value "$local_status" '.result.sync_info.latest_block_height // .sync_info.latest_block_height' "cosmos local height")
+  local_hash=$(jq_value "$local_status" '.result.sync_info.latest_block_hash // .sync_info.latest_block_hash' "cosmos local hash")
+  local_catching_up=$(jq_value "$local_status" '.result.sync_info.catching_up // .sync_info.catching_up' "cosmos local catching_up")
+  [[ -z "$local_height" ]] && fail "Failed to parse local height"
 
   # Get public status
   local public_status
-  public_status=$(cosmos_get_status "" "$public_rpc")
-  if [[ -z "$public_status" ]]; then
-    echo "❌ error: Failed to get public status" >&2
-    echo ""
-    echo "❌ Final status: error"
-    exit 4
-  fi
+  public_status=$(cosmos_get_status "" "$public_rpc") || fail "RPC unreachable ($public_rpc)"
+  [[ -z "$public_status" ]] && fail "Failed to get public status"
 
   local public_height public_hash
-  public_height=$(echo "$public_status" | jq -r '.result.sync_info.latest_block_height // .sync_info.latest_block_height')
-  public_hash=$(echo "$public_status" | jq -r '.result.sync_info.latest_block_hash // .sync_info.latest_block_hash')
+  public_height=$(jq_value "$public_status" '.result.sync_info.latest_block_height // .sync_info.latest_block_height' "cosmos public height")
+  public_hash=$(jq_value "$public_status" '.result.sync_info.latest_block_hash // .sync_info.latest_block_hash' "cosmos public hash")
+  [[ -z "$public_height" ]] && fail "Failed to parse public height"
 
   local raw_lag=$((public_height - local_height))
   local lag=$raw_lag
   local lag_direction="local behind"
-  if (( lag < 0 )); then
-    lag=$(( -lag ))
+  if (( raw_lag == 0 )); then
+    lag=0
+    lag_direction="local in sync"
+  elif (( raw_lag < 0 )); then
+    lag=$(( -raw_lag ))
     lag_direction="local ahead"
   fi
 
+  local sync_state="in_sync"
+  if [[ "$local_catching_up" == "true" ]] || (( raw_lag > BLOCK_LAG )); then
+    sync_state="syncing"
+  fi
+  print_sync_state "$sync_state"
+
   echo ""
-  echo "⏳ Height comparison"
-  echo "Local height:  $local_height"
-  echo "Public height: $public_height"
-  echo "Lag:           $lag blocks (threshold: $BLOCK_LAG) ($lag_direction)"
-  echo "ETA sample:    n/a"
-
-  # Check catching_up flag
-  if [[ "$local_catching_up" == "true" ]]; then
-    echo ""
-    echo "⏳ Final status: syncing"
-    exit 1
-  fi
-
-  # Check lag (only if local is behind)
-  if (( raw_lag > BLOCK_LAG )); then
-    echo ""
-    echo "⏳ Final status: syncing"
-    exit 1
-  fi
+  echo "⏳ Head comparison"
+  echo "Local head:  $local_height"
+  echo "Public head: $public_height"
+  echo "Lag:         $lag blocks (threshold: $BLOCK_LAG) ($lag_direction)"
+  echo "ETA sample:  n/a"
 
   # Check hash at same height
-  if [[ "$local_height" == "$public_height" && "$local_hash" != "$public_hash" ]]; then
+  echo ""
+  echo "⏳ Latest block comparison"
+  echo "Local latest:  $local_height $(format_hash "$local_hash")"
+  echo "Public latest: $public_height $(format_hash "$public_hash")"
+
+  if [[ "$local_height" == "$public_height" && -n "$local_hash" && -n "$public_hash" && "$local_hash" != "$public_hash" ]]; then
     echo ""
-    echo "❌ Hash mismatch at height $local_height" >&2
-    echo "   Local:  $local_hash" >&2
-    echo "   Public: $public_hash" >&2
-    echo ""
-    echo "❌ Final status: diverged (possible fork)"
-    exit 2
+    fail "Hash mismatch at height $local_height"
   fi
 
   echo ""
-  echo "✅ Final status: in sync"
-  exit 0
+  if [[ "$sync_state" == "syncing" ]]; then
+    exit_with_status syncing
+  fi
+  exit_with_status in_sync
 }
 
 # ============================================================================
 # PROTOCOL: BEACON CHAIN (CL)
 # ============================================================================
+
+beacon_get_syncing() {
+  local container="$1"
+  local url="$2"
+
+  rpc_get "$container" "${url}/eth/v1/node/syncing"
+}
+
+beacon_get_head() {
+  local container="$1"
+  local url="$2"
+
+  rpc_get "$container" "${url}/eth/v1/beacon/headers/head"
+}
 
 check_beacon() {
   local container="$1"
@@ -562,46 +562,82 @@ check_beacon() {
 
   # Get local syncing status
   local local_response
-  local_response=$(rpc_get "$container" "${local_rpc}/eth/v1/node/syncing" 2>/dev/null) || {
-    echo "❌ error: RPC unreachable ($local_rpc)"
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
-  }
-  if [[ -z "$local_response" ]]; then
-    echo "❌ error: Failed to get local sync status" >&2
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
+  local_response=$(beacon_get_syncing "$container" "$local_rpc" 2>/dev/null) || fail "RPC unreachable ($local_rpc)"
+  [[ -z "$local_response" ]] && fail "Failed to get local sync status"
+
+  local head_slot is_syncing is_optimistic
+  head_slot=$(jq_value "$local_response" '.data.head_slot' "beacon local head_slot")
+  is_syncing=$(jq_value "$local_response" '.data.is_syncing' "beacon local is_syncing")
+  is_optimistic=$(jq_value "$local_response" '.data.is_optimistic' "beacon local is_optimistic")
+  [[ -z "$head_slot" ]] && fail "Failed to parse local head slot"
+
+  # Get public syncing status (for head slot)
+  local public_response
+  public_response=$(beacon_get_syncing "" "$public_rpc") || fail "Failed to get public sync status"
+  [[ -z "$public_response" ]] && fail "Failed to get public sync status"
+
+  local public_head_slot
+  public_head_slot=$(jq_value "$public_response" '.data.head_slot' "beacon public head_slot")
+  [[ -z "$public_head_slot" ]] && fail "Failed to parse public head slot"
+
+  local raw_lag=$((public_head_slot - head_slot))
+  local lag=$raw_lag
+  local lag_direction="local behind"
+  if (( raw_lag == 0 )); then
+    lag=0
+    lag_direction="local in sync"
+  elif (( raw_lag < 0 )); then
+    lag=$(( -raw_lag ))
+    lag_direction="local ahead"
   fi
 
-  local head_slot sync_distance is_syncing is_optimistic
-  head_slot=$(echo "$local_response" | jq -r '.data.head_slot')
-  sync_distance=$(echo "$local_response" | jq -r '.data.sync_distance')
-  is_syncing=$(echo "$local_response" | jq -r '.data.is_syncing')
-  is_optimistic=$(echo "$local_response" | jq -r '.data.is_optimistic')
-
-  print_sync_status "$is_syncing" "is_syncing"
+  local sync_state="in_sync"
+  if [[ "$is_syncing" == "true" ]] || (( raw_lag > BLOCK_LAG )); then
+    sync_state="syncing"
+  fi
+  print_sync_state "$sync_state"
   if [[ "$is_optimistic" == "true" ]]; then
     echo "⏳ is_optimistic: true"
   fi
 
   echo ""
-  echo "⏳ Slot comparison"
-  echo "Head slot:     $head_slot"
-  echo "Sync distance: $sync_distance slots"
-  echo "Lag:           $sync_distance slots (threshold: $BLOCK_LAG)"
-  echo "ETA sample:    n/a"
+  echo "⏳ Head comparison"
+  echo "Local head:  $head_slot"
+  echo "Public head: $public_head_slot"
+  echo "Lag:         $lag slots (threshold: $BLOCK_LAG) ($lag_direction)"
+  echo "ETA sample:  n/a"
 
-  if [[ "$is_syncing" == "true" ]]; then
-    echo ""
-    echo "⏳ Final status: syncing"
-    exit 1
+  local local_head_response public_head_response
+  local_head_response=$(beacon_get_head "$container" "$local_rpc" 2>/dev/null || true)
+  public_head_response=$(beacon_get_head "" "$public_rpc" 2>/dev/null || true)
+
+  local local_root public_root
+  if [[ -n "$local_head_response" ]]; then
+    local_root=$(jq_value "$local_head_response" '.data.root // empty' "beacon local head root")
+  else
+    local_root=""
+  fi
+  if [[ -n "$public_head_response" ]]; then
+    public_root=$(jq_value "$public_head_response" '.data.root // empty' "beacon public head root")
+  else
+    public_root=""
   fi
 
   echo ""
-  echo "✅ Final status: in sync"
-  exit 0
+  echo "⏳ Latest block comparison"
+  echo "Local latest:  $head_slot $(format_hash "$local_root")"
+  echo "Public latest: $public_head_slot $(format_hash "$public_root")"
+
+  if [[ "$head_slot" == "$public_head_slot" && -n "$local_root" && -n "$public_root" && "$local_root" != "$public_root" ]]; then
+    echo ""
+    fail "Hash mismatch at slot $head_slot"
+  fi
+
+  echo ""
+  if [[ "$sync_state" == "syncing" ]]; then
+    exit_with_status syncing
+  fi
+  exit_with_status in_sync
 }
 
 # ============================================================================
@@ -612,7 +648,13 @@ sui_get_checkpoint() {
   local container="$1"
   local url="$2"
 
-  rpc_post "$container" "$url" "sui_getLatestCheckpointSequenceNumber" | jq -r '.result'
+  local response result
+  if ! response=$(rpc_post "$container" "$url" "sui_getLatestCheckpointSequenceNumber"); then
+    return 1
+  fi
+  result=$(jq_value "$response" '.result' "sui latest checkpoint")
+  [[ "$result" == "null" ]] && result=""
+  echo "$result"
 }
 
 sui_get_checkpoint_digest() {
@@ -620,7 +662,13 @@ sui_get_checkpoint_digest() {
   local url="$2"
   local checkpoint="$3"
 
-  rpc_post "$container" "$url" "sui_getCheckpoint" "[\"$checkpoint\"]" | jq -r '.result.digest'
+  local response result
+  if ! response=$(rpc_post "$container" "$url" "sui_getCheckpoint" "[\"$checkpoint\"]"); then
+    return 1
+  fi
+  result=$(jq_value "$response" '.result.digest' "sui checkpoint digest")
+  [[ "$result" == "null" ]] && result=""
+  echo "$result"
 }
 
 check_sui() {
@@ -632,73 +680,58 @@ check_sui() {
 
   # Get local checkpoint
   local local_cp
-  local_cp=$(sui_get_checkpoint "$container" "$local_rpc" 2>/dev/null) || {
-    echo "❌ error: RPC unreachable ($local_rpc)"
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
-  }
-  if [[ -z "$local_cp" ]]; then
-    echo "❌ error: Failed to get local checkpoint" >&2
-    echo ""
-    echo "❌ Final status: error"
-    exit 3
-  fi
+  local_cp=$(sui_get_checkpoint "$container" "$local_rpc" 2>/dev/null) || fail "RPC unreachable ($local_rpc)"
+  [[ -z "$local_cp" ]] && fail "Failed to get local checkpoint"
 
   # Get public checkpoint
   local public_cp
-  public_cp=$(sui_get_checkpoint "" "$public_rpc")
-  if [[ -z "$public_cp" ]]; then
-    echo "❌ error: Failed to get public checkpoint" >&2
-    echo ""
-    echo "❌ Final status: error"
-    exit 4
-  fi
+  public_cp=$(sui_get_checkpoint "" "$public_rpc") || fail "RPC unreachable ($public_rpc)"
+  [[ -z "$public_cp" ]] && fail "Failed to get public checkpoint"
 
   local raw_lag=$((public_cp - local_cp))
   local lag=$raw_lag
   local lag_direction="local behind"
-  local is_syncing="false"
-  if (( lag < 0 )); then
-    lag=$(( -lag ))
+  if (( raw_lag == 0 )); then
+    lag=0
+    lag_direction="local in sync"
+  elif (( raw_lag < 0 )); then
+    lag=$(( -raw_lag ))
     lag_direction="local ahead"
-  elif (( lag > BLOCK_LAG )); then
-    is_syncing="true"
   fi
 
-  print_sync_status "$is_syncing" "syncing"
+  local sync_state="in_sync"
+  if (( raw_lag > BLOCK_LAG )); then
+    sync_state="syncing"
+  fi
+  print_sync_state "$sync_state"
 
   echo ""
-  echo "⏳ Checkpoint comparison"
-  echo "Local checkpoint:  $local_cp"
-  echo "Public checkpoint: $public_cp"
-  echo "Lag:               $lag checkpoints (threshold: $BLOCK_LAG) ($lag_direction)"
-  echo "ETA sample:        n/a"
-
-  if (( raw_lag > BLOCK_LAG )); then
-    echo ""
-    echo "⏳ Final status: syncing"
-    exit 1
-  fi
+  echo "⏳ Head comparison"
+  echo "Local head:  $local_cp"
+  echo "Public head: $public_cp"
+  echo "Lag:         $lag blocks (threshold: $BLOCK_LAG) ($lag_direction)"
+  echo "ETA sample:  n/a"
 
   # Verify digest at local checkpoint
   local local_digest public_digest
-  local_digest=$(sui_get_checkpoint_digest "$container" "$local_rpc" "$local_cp")
-  public_digest=$(sui_get_checkpoint_digest "" "$public_rpc" "$local_cp")
+  local_digest=$(sui_get_checkpoint_digest "$container" "$local_rpc" "$local_cp") || fail "RPC unreachable ($local_rpc)"
+  public_digest=$(sui_get_checkpoint_digest "" "$public_rpc" "$local_cp") || fail "RPC unreachable ($public_rpc)"
+
+  echo ""
+  echo "⏳ Latest block comparison"
+  echo "Local latest:  $local_cp $(format_hash "$local_digest")"
+  echo "Public latest: $public_cp $(format_hash "$public_digest")"
 
   if [[ -n "$local_digest" && -n "$public_digest" && "$local_digest" != "$public_digest" ]]; then
     echo ""
-    echo "❌ Digest mismatch at checkpoint $local_cp" >&2
-    echo "   Local:  $local_digest" >&2
-    echo "   Public: $public_digest" >&2
-    echo ""
-    echo "❌ Final status: diverged (possible fork)"
-    exit 2
+    fail "Digest mismatch at checkpoint $local_cp"
   fi
 
   echo ""
-  echo "✅ Final status: in sync"
-  exit 0
+  if [[ "$sync_state" == "syncing" ]]; then
+    exit_with_status syncing
+  fi
+  exit_with_status in_sync
 }
 
 # ============================================================================
@@ -718,14 +751,79 @@ format_eta() {
   fi
 }
 
-print_sync_status() {
-  local is_syncing="$1"
-  local label="${2:-Syncing}"  # default to generic "Syncing"
-  if [[ "$is_syncing" == "true" ]]; then
-    echo "⏳ ${label}: true"
+format_hash() {
+  local hash="$1"
+  if [[ -n "$hash" ]]; then
+    echo "$hash"
   else
-    echo "✅ ${label}: false"
+    echo "n/a"
   fi
+}
+
+exit_with_status() {
+  local state="$1"
+  case "$state" in
+    in_sync)
+      echo "✅ Final status: in sync"
+      exit 0
+      ;;
+    syncing)
+      echo "⏳ Final status: syncing"
+      exit 1
+      ;;
+    error)
+      echo "❌ Final status: error"
+      exit 2
+      ;;
+    *)
+      echo "❌ Final status: error"
+      exit 2
+      ;;
+  esac
+}
+
+fail() {
+  local message="$1"
+  echo "❌ error: ${message}" >&2
+  echo ""
+  exit_with_status error
+}
+
+print_eth_syncing() {
+  local is_syncing="$1"
+  if [[ "$is_syncing" == "true" ]]; then
+    echo "⏳ eth_syncing: true"
+  else
+    echo "✅ eth_syncing: false"
+  fi
+}
+
+print_sync_state() {
+  local state="$1"
+  case "$state" in
+    in_sync)
+      echo "✅ sync_state: in_sync"
+      ;;
+    syncing)
+      echo "⏳ sync_state: syncing"
+      ;;
+    *)
+      echo "⚠️ sync_state: unknown"
+      ;;
+  esac
+}
+
+jq_value() {
+  local response="$1"
+  local filter="$2"
+  local context="$3"
+  local value
+
+  if ! value=$(echo "$response" | jq -r "$filter" 2>/dev/null); then
+    fail "JSON parse error ($context)"
+  fi
+
+  echo "$value"
 }
 
 # ============================================================================
@@ -743,15 +841,8 @@ main() {
 
   # Validate public RPC
   if [[ -z "$public_rpc" ]]; then
-    echo "ERROR: --public-rpc is required" >&2
-    exit 6
+    fail "--public-rpc is required"
   fi
-
-  echo "Protocol:     $PROTOCOL"
-  echo "Local RPC:    $local_rpc"
-  echo "Public RPC:   $public_rpc"
-  [[ -n "$container" ]] && echo "Container:    $container"
-  echo "---"
 
   ensure_tools "$container"
 
@@ -769,8 +860,7 @@ main() {
       check_sui "$container" "$local_rpc" "$public_rpc"
       ;;
     *)
-      echo "ERROR: Unknown protocol: $PROTOCOL" >&2
-      exit 6
+      fail "Unknown protocol: $PROTOCOL"
       ;;
   esac
 }
