@@ -26,12 +26,23 @@ To update the software, run `./wemd update` and then `./wemd up`
 To verify your node is synced with the public Wemix network:
 
 ```bash
-./scripts/check_sync.sh
+bash scripts/check_sync.sh
 ```
 
 This script compares your local node's latest block against the public Wemix RPC endpoint (`https://api.wemix.com`). It will report:
 - ✅ Node is in sync (height and hash match)
 - ⚠️ Heights differ - still syncing
 - ❌ Heights match but hashes differ - possible reorg or divergence
+
+Defaults used by the sync check:
+- Public RPC: `https://api.wemix.com`
+- Local RPC: `http://127.0.0.1:${RPC_PORT}` (from `.env`, default `8588`)
+- Compose service (wrapper): `gwemix` (when using `./ethd check-sync`)
+
+You can also run:
+
+```bash
+./ethd check-sync
+```
 
 This is Wemix Docker v1.0.0
